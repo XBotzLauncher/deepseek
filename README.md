@@ -21,6 +21,8 @@ Unofficial Node.js client untuk [DeepSeek Chat](https://chat.deepseek.com) — r
 ## 📦 Instalasi
 
 ```bash
+git clone https://github.com/XBotzLauncher/deepseek.git
+cd deepseek
 npm install
 ```
 
