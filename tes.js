@@ -5,7 +5,7 @@ const { DeepSeekClient } = require('./deepseek');
 async function main() {
   const client = new DeepSeekClient();
 
-  await client.login('example', 'example');
+  await client.login('example@gmail.com', 'example');
   console.log('Login berhasil!');
 
   const reply = await client.quickChat('Halo! Siapa kamu?');
