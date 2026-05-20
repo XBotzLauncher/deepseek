@@ -14,7 +14,9 @@ Unofficial Node.js client untuk [DeepSeek Chat](https://chat.deepseek.com) — r
 - 🔍 Web search toggle
 - 📎 Upload file & kirim ke chat
 - 🔒 Proof-of-Work (PoW) otomatis via WASM
+- 🛡️ AWS WAF bypass otomatis (NetworkBandwidth / HashcashScrypt / SHA256)
 - 🍪 Cookie & token management otomatis
+- 🌐 Proxy support (HTTP/HTTPS)
 
 ---
 
@@ -28,7 +30,10 @@ npm install
 
 **Dependencies:**
 - `form-data` — untuk upload file
+- `axios` + `axios-cookiejar-support` + `tough-cookie` — untuk WAF solver
+- `https-proxy-agent` — untuk proxy support (opsional)
 - `sha3_wasm.wasm` — sudah include di repo (digunakan untuk PoW solving)
+- `webgl.json` — sudah include di repo (GPU pool untuk WAF fingerprint)
 
 ---
 
@@ -47,6 +52,18 @@ const reply = await client.quickChat('Halo! Siapa kamu?');
 console.log(reply.content);
 
 await client.logout();
+```
+
+---
+
+### Dengan Proxy
+
+```js
+const client = new DeepSeekClient({ proxy: 'http://user:pass@host:port' });
+
+await client.login('email@example.com', 'password');
+const reply = await client.quickChat('Halo!');
+console.log(reply.content);
 ```
 
 ---
@@ -73,6 +90,9 @@ await client.logout();
 ### Upload File + Chat
 
 ```js
+const client = new DeepSeekClient();
+await client.login('email@example.com', 'password');
+
 const sessionId = await client.createSession();
 
 const fileId = await client.uploadFile('./foto.jpg', 'foto.jpg', 'image/jpeg');
@@ -84,15 +104,31 @@ console.log(reply.content);
 
 ---
 
+### Set Token Manual (tanpa login)
+
+```js
+const client = new DeepSeekClient();
+client.setToken('token-lo-di-sini');
+
+const reply = await client.quickChat('Halo!');
+console.log(reply.content);
+```
+
+---
+
 ## 📖 API Reference
 
-### `new DeepSeekClient()`
+### `new DeepSeekClient(opts?)`
 Buat instance client baru.
+
+| Param | Type | Default | Keterangan |
+|-------|------|---------|------------|
+| `opts.proxy` | `string` | `null` | URL proxy HTTP/HTTPS (opsional) |
 
 ---
 
 ### `client.login(email, password)`
-Login ke DeepSeek.
+Login ke DeepSeek. Secara otomatis menyelesaikan AWS WAF challenge sebelum request login dikirim.
 
 | Param | Type | Keterangan |
 |-------|------|------------|
@@ -103,8 +139,17 @@ Login ke DeepSeek.
 
 ---
 
+### `client.setToken(token)`
+Set token autentikasi secara manual, tanpa perlu login.
+
+| Param | Type | Keterangan |
+|-------|------|------------|
+| `token` | `string` | Bearer token dari DeepSeek |
+
+---
+
 ### `client.logout()`
-Logout dan hapus token.
+Logout, hapus token, dan reset status WAF.
 
 ---
 
@@ -122,8 +167,8 @@ Kirim pesan dalam sesi tertentu (mendukung multi-turn).
 |-------|------|---------|------------|
 | `sessionId` | `string` | — | ID sesi dari `createSession()` |
 | `message` | `string` | — | Pesan yang dikirim |
-| `opts.thinking` | `boolean` | `true` | Aktifkan thinking mode |
-| `opts.search` | `boolean` | `false` | Aktifkan web search |
+| `opts.thinking` | `boolean` | `false` | Aktifkan thinking mode |
+| `opts.search` | `boolean` | `true` | Aktifkan web search |
 | `opts.fileIds` | `string[]` | `[]` | ID file yang sudah diupload |
 
 **Returns:** `{ content: string, message_id: string }`
@@ -171,7 +216,7 @@ try {
 } catch (err) {
   console.log(err.name);    // "DeepSeekError"
   console.log(err.message); // pesan error
-  console.log(err.code);    // kode error, e.g. "AUTH_NO_TOKEN", "TIMEOUT"
+  console.log(err.code);    // kode error, e.g. "AUTH_NO_TOKEN"
   console.log(err.data);    // raw response dari server (jika ada)
 }
 ```
@@ -181,6 +226,7 @@ try {
 | Code | Keterangan |
 |------|------------|
 | `AUTH_NO_TOKEN` | Login gagal, token tidak ditemukan |
+| `WAF_FAILED` | AWS WAF challenge gagal diselesaikan |
 | `SESSION_CREATE_FAILED` | Gagal membuat sesi chat |
 | `POW_FAILED` | Gagal solve Proof-of-Work |
 | `FILE_NOT_FOUND` | File ID tidak ditemukan |
@@ -195,9 +241,11 @@ try {
 
 ```
 deepseek/
-├── deepseek.js       # Core client library
-├── sha3_wasm.wasm    # WASM binary untuk PoW (jangan dihapus)
-├── tes.js            # Contoh penggunaan
+├── deepseek.js         # Core client library
+├── aws-waf-solver.js   # AWS WAF challenge solver
+├── sha3_wasm.wasm      # WASM binary untuk PoW (jangan dihapus)
+├── webgl.json          # GPU pool untuk WAF browser fingerprint
+├── tes.js              # Contoh penggunaan
 └── package.json
 ```
 

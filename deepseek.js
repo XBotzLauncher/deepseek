@@ -5,19 +5,22 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const FormData = require('form-data');
+const { solveAwsWaf } = require('./aws-waf-solver'); // file solver lo
 
 const BASE_URL = 'https://chat.deepseek.com';
 
 const API = {
-  LOGIN:         '/api/v0/users/login',
-  LOGOUT:        '/api/v0/users/logout',
-  POW_CHALLENGE: '/api/v0/chat/create_pow_challenge',
-  CREATE_SESSION:'/api/v0/chat_session/create',
-  CHAT:          '/api/v0/chat/completion',
-  UPLOAD_FILE:   '/api/v0/file/upload_file',
-  FETCH_FILES:   '/api/v0/file/fetch_files',
-  PREVIEW_FILE:  '/api/v0/file/preview',
+  LOGIN:          '/api/v0/users/login',
+  LOGOUT:         '/api/v0/users/logout',
+  POW_CHALLENGE:  '/api/v0/chat/create_pow_challenge',
+  CREATE_SESSION: '/api/v0/chat_session/create',
+  CHAT:           '/api/v0/chat/completion',
+  UPLOAD_FILE:    '/api/v0/file/upload_file',
+  FETCH_FILES:    '/api/v0/file/fetch_files',
+  PREVIEW_FILE:   '/api/v0/file/preview',
 };
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
 
 class DeepSeekError extends Error {
   constructor(message, code = 'UNKNOWN', data = null) {
@@ -28,14 +31,19 @@ class DeepSeekError extends Error {
   }
 }
 
+// ── Cookie store ──────────────────────────────────────────────────────────────
+
 const cookies = new Map();
 
 function setCookies(raw) {
   const arr = Array.isArray(raw) ? raw : [raw];
   for (const c of arr) {
     const [pair] = c.split(';');
-    const [name, val] = pair.split('=');
-    if (name) cookies.set(name.trim(), val ?? '');
+    const idx = pair.indexOf('=');
+    if (idx < 0) continue;
+    const name = pair.slice(0, idx).trim();
+    const val  = pair.slice(idx + 1);
+    if (name) cookies.set(name, val ?? '');
   }
 }
 
@@ -45,22 +53,28 @@ function serializeCookies() {
 
 let authToken = null;
 
+// ── Headers ───────────────────────────────────────────────────────────────────
+
 function buildHeaders(extra = {}) {
   const h = {
     'Accept': '*/*',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': UA,
     'Origin': BASE_URL,
     'Referer': `${BASE_URL}/`,
     'Accept-Language': 'en-US,en;q=0.9',
-    'x-app-version': '20241129.1',
+    'x-app-version': '2.0.0',
+    'x-client-version': '2.0.0',
     'x-client-platform': 'web',
     'x-client-locale': 'en_US',
+    'x-client-timezone-offset': '25200',
   };
   const c = serializeCookies();
   if (c) h['Cookie'] = c;
   if (authToken) h['Authorization'] = `Bearer ${authToken}`;
   return Object.assign(h, extra);
 }
+
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 function request(method, urlPath, { body, headers: extraHeaders = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -93,15 +107,8 @@ function request(method, urlPath, { body, headers: extraHeaders = {} } = {}) {
       res.on('end', () => {
         const raw = Buffer.concat(chunks).toString('utf8');
         let parsed;
-        try { parsed = JSON.parse(raw); } catch { return resolve({ raw }); }
-        if (res.statusCode >= 400 || (parsed.code !== undefined && parsed.code !== 0)) {
-          return reject(new DeepSeekError(
-            parsed.msg || parsed.message || `HTTP ${res.statusCode}`,
-            parsed.code || `HTTP_${res.statusCode}`,
-            parsed
-          ));
-        }
-        resolve(parsed);
+        try { parsed = JSON.parse(raw); } catch { return resolve({ raw, _status: res.statusCode, _headers: res.headers }); }
+        resolve({ ...parsed, _status: res.statusCode, _headers: res.headers });
       });
       res.on('error', reject);
     });
@@ -109,12 +116,8 @@ function request(method, urlPath, { body, headers: extraHeaders = {} } = {}) {
     req.on('error', err => reject(new DeepSeekError(err.message, err.code)));
     req.on('timeout', () => { req.destroy(); reject(new DeepSeekError('Request timeout', 'TIMEOUT')); });
 
-    if (bodyBuf instanceof FormData) {
-      bodyBuf.pipe(req);
-    } else {
-      if (bodyBuf) req.write(bodyBuf);
-      req.end();
-    }
+    if (bodyBuf instanceof FormData) bodyBuf.pipe(req);
+    else { if (bodyBuf) req.write(bodyBuf); req.end(); }
   });
 }
 
@@ -139,6 +142,8 @@ function streamRequest(urlPath, body, extraHeaders = {}) {
   });
 }
 
+// ── PoW ───────────────────────────────────────────────────────────────────────
+
 let _wasmInstance = null;
 
 async function loadWasm() {
@@ -146,7 +151,7 @@ async function loadWasm() {
   const wasmPath = path.join(__dirname, 'sha3_wasm.wasm');
   const wasmBuf = fs.readFileSync(wasmPath);
   const { instance } = await WebAssembly.instantiate(wasmBuf, {
-    wbg: { __wbindgen_throw: (ptr, len) => { throw new Error('wasm error'); } }
+    wbg: { __wbindgen_throw: () => { throw new Error('wasm error'); } }
   });
   _wasmInstance = instance.exports;
   return _wasmInstance;
@@ -185,10 +190,10 @@ async function solvePoW(challenge) {
 
   const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
   try {
-    const chPtr = passStr(ch);   const chLen = WLEN;
+    const chPtr = passStr(ch);    const chLen = WLEN;
     const pfPtr = passStr(prefix); const pfLen = WLEN;
     wasm.wasm_solve(retptr, chPtr, chLen, pfPtr, pfLen, difficulty);
-    const code   = getDV().getInt32(retptr,     true);
+    const code   = getDV().getInt32(retptr,      true);
     const answer = getDV().getFloat64(retptr + 8, true);
     if (code === 0) throw new DeepSeekError('PoW: no solution found', 'POW_FAILED');
     return { algorithm, challenge: ch, salt, answer: Math.round(answer), signature };
@@ -204,12 +209,13 @@ async function getPowHeader(targetPath) {
   return Buffer.from(JSON.stringify({ ...pow, target_path: targetPath })).toString('base64');
 }
 
+// ── SSE parser ────────────────────────────────────────────────────────────────
+
 function parseSSEStream(stream) {
   return new Promise((resolve, reject) => {
     let buf = '';
     let content = '';
     let messageId = null;
-
     let lastPath = null;
 
     function processLine(line) {
@@ -218,18 +224,29 @@ function parseSSEStream(stream) {
       if (raw === '[DONE]') return;
       try {
         const ev = JSON.parse(raw);
-        const v = ev.v;
-        const p = ev.p;
-        const o = ev.o;
-
         if (ev.response_message_id) messageId = ev.response_message_id;
 
-        if (p !== undefined) lastPath = p;
+        if (ev.p !== undefined) {
+          lastPath = ev.p;
+          if (typeof ev.v === 'string' && ev.p.includes('/content') && !ev.p.includes('thinking'))
+            content += ev.v;
+          return;
+        }
 
-        if (typeof v === 'string') {
-          const isContent = lastPath === 'response/content' ||
-                            (p !== undefined && p.includes('/content') && !p.includes('thinking'));
-          if (isContent) content += v;
+        if (ev.v !== undefined && ev.o === undefined && ev.p === undefined) {
+          if (typeof ev.v === 'string' && lastPath?.includes('/content') && !lastPath.includes('thinking'))
+            content += ev.v;
+          return;
+        }
+
+        if (ev.v?.response?.fragments) {
+          for (const frag of ev.v.response.fragments) {
+            if (frag.type === 'RESPONSE' && typeof frag.content === 'string') {
+              content += frag.content;
+              lastPath = 'response/fragments/-1/content';
+            }
+          }
+          if (ev.v.response?.message_id) messageId = ev.v.response.message_id;
         }
       } catch {}
     }
@@ -240,28 +257,72 @@ function parseSSEStream(stream) {
       buf = lines.pop();
       for (const line of lines) processLine(line.trim());
     });
-
     stream.on('end', () => {
       if (buf.trim()) processLine(buf.trim());
       resolve({ content, message_id: messageId });
     });
-
     stream.on('error', err => reject(new DeepSeekError(err.message, 'STREAM_ERROR')));
   });
 }
 
+// ── Client ────────────────────────────────────────────────────────────────────
+
 class DeepSeekClient {
-  constructor() {
-    this._deviceId = crypto.randomUUID();
+  constructor({ proxy = null } = {}) {
+    this._proxy = proxy;
     this._sessions = new Map();
+    this._wafSolved = false;
+  }
+
+  setToken(token) {
+    authToken = token;
+  }
+
+  // Solve WAF sekali, simpan token ke cookie store
+  async _ensureWaf() {
+    if (this._wafSolved) return;
+    const result = await solveAwsWaf(BASE_URL, UA, this._proxy);
+    if (!result?.token) throw new DeepSeekError('WAF solve failed: no token', 'WAF_FAILED');
+    // Inject token ke cookie store internal kita
+    cookies.set('aws-waf-token', result.token);
+    this._wafSolved = true;
   }
 
   async login(email, password) {
-    const res = await request('POST', API.LOGIN, {
-      body: { email, password, device_id: this._deviceId, os: 'web', locale: 'en_US' }
-    });
-    const token = res?.data?.biz_data?.user?.token;
-    if (!token) throw new DeepSeekError('Login failed: no token', 'AUTH_NO_TOKEN');
+    // Solve WAF dulu sebelum login
+    await this._ensureWaf();
+
+    const loginBody = {
+      email,
+      mobile: '',
+      password,
+      area_code: '',
+      // device_id format dari log: 'B' + base64 — generate random
+      device_id: 'B' + Buffer.from(crypto.randomBytes(48)).toString('base64'),
+      os: 'web',
+    };
+
+    const res = await request('POST', API.LOGIN, { body: loginBody });
+
+    // Kalau WAF block lagi (202 / challenge header), re-solve sekali
+    if (
+      res._status === 202 ||
+      res._headers?.['x-amzn-waf-action'] === 'challenge'
+    ) {
+      this._wafSolved = false;
+      await this._ensureWaf();
+      const retry = await request('POST', API.LOGIN, { body: loginBody });
+      return this._extractToken(retry);
+    }
+
+    return this._extractToken(res);
+  }
+
+  _extractToken(res) {
+    const token =
+      res?.data?.biz_data?.user?.token ??
+      res?.data?.user?.token;
+    if (!token) throw new DeepSeekError('Login failed: no token', 'AUTH_NO_TOKEN', res);
     authToken = token;
     return { ok: true, token };
   }
@@ -269,11 +330,12 @@ class DeepSeekClient {
   async logout() {
     await request('POST', API.LOGOUT, { body: {} }).catch(() => {});
     authToken = null;
+    this._wafSolved = false;
   }
 
   async createSession() {
     const res = await request('POST', API.CREATE_SESSION, { body: {} });
-    const sessionId = res?.data?.biz_data?.id;
+    const sessionId = res?.data?.biz_data?.chat_session?.id;
     if (!sessionId) throw new DeepSeekError('Failed to create session', 'SESSION_CREATE_FAILED');
     this._sessions.set(sessionId, { lastMessageId: null });
     return sessionId;
@@ -286,16 +348,17 @@ class DeepSeekClient {
     const stream = await streamRequest(API.CHAT, {
       chat_session_id: sessionId,
       parent_message_id: session.lastMessageId,
+      model_type: 'default',
       prompt: message,
       ref_file_ids: opts.fileIds || [],
-      thinking_enabled: opts.thinking !== false,
-      search_enabled: opts.search || false,
+      thinking_enabled: opts.thinking || false,
+      search_enabled: opts.search ?? true,
+      preempt: false,
     }, { 'X-Ds-Pow-Response': powHeader });
 
     const result = await parseSSEStream(stream);
     session.lastMessageId = result.message_id;
     this._sessions.set(sessionId, session);
-
     return result;
   }
 
@@ -308,7 +371,8 @@ class DeepSeekClient {
     const buffer = typeof filePathOrBuffer === 'string'
       ? fs.readFileSync(filePathOrBuffer)
       : filePathOrBuffer;
-    if (!filename && typeof filePathOrBuffer === 'string') filename = path.basename(filePathOrBuffer);
+    if (!filename && typeof filePathOrBuffer === 'string')
+      filename = path.basename(filePathOrBuffer);
 
     const powHeader = await getPowHeader(API.UPLOAD_FILE);
     const form = new FormData();
