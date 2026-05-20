@@ -5,14 +5,14 @@ const { DeepSeekClient } = require('./deepseek');
 async function main() {
   const client = new DeepSeekClient();
 
-  await client.login('xbotztechnology@gmail.com', 'guntur1204');
+  await client.login('example', 'example');
   console.log('Login berhasil!');
 
   const reply = await client.quickChat('Halo! Siapa kamu?');
   console.log('Reply:', reply.content);
 
   /*
-  client.setToken('wO7or1dSLll6oTiwNysgAUXEE4UVMHzKB858x6YtsUV4GxL91Y2bLL1/LlUJy9XL');
+  client.setToken('example/LlUJy9XL');
   console.log('Token set!');
 
   const sessionId = await client.createSession();
