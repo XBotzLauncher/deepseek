@@ -3,8 +3,13 @@
   "version": "1.0.0",
   "description": "Unofficial Node.js client untuk [DeepSeek Chat](https://chat.deepseek.com) — reverse-engineered dari web API-nya langsung. Mendukung login, multi-turn conversation, upload file, dan thinking mode.",
   "main": "deepseek.js",
+  "bin": {
+    "deepseek": "./cli.js"
+  },
   "scripts": {
-    "start": "node tes.js"
+    "start": "node cli.js",
+    "chat": "node cli.js --message",
+    "login": "node cli.js --login"
   },
   "repository": {
     "type": "git",
