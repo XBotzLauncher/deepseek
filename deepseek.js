@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const FormData = require('form-data');
-const { solveAwsWaf } = require('./aws-waf-solver'); // file solver lo
+const { solveAwsWaf } = require('./aws-waf-solver');
 
 const BASE_URL = 'https://chat.deepseek.com';
 
@@ -31,8 +31,6 @@ class DeepSeekError extends Error {
   }
 }
 
-// ── Cookie store ──────────────────────────────────────────────────────────────
-
 const cookies = new Map();
 
 function setCookies(raw) {
@@ -53,8 +51,6 @@ function serializeCookies() {
 
 let authToken = null;
 
-// ── Headers ───────────────────────────────────────────────────────────────────
-
 function buildHeaders(extra = {}) {
   const h = {
     'Accept': '*/*',
@@ -73,8 +69,6 @@ function buildHeaders(extra = {}) {
   if (authToken) h['Authorization'] = `Bearer ${authToken}`;
   return Object.assign(h, extra);
 }
-
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 function request(method, urlPath, { body, headers: extraHeaders = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -106,6 +100,11 @@ function request(method, urlPath, { body, headers: extraHeaders = {} } = {}) {
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
         const raw = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 400) {
+           let msg = `HTTP ${res.statusCode}`;
+           try { const p = JSON.parse(raw); msg = p.message || msg; } catch {}
+           return reject(new DeepSeekError(msg, `HTTP_${res.statusCode}`, raw));
+        }
         let parsed;
         try { parsed = JSON.parse(raw); } catch { return resolve({ raw, _status: res.statusCode, _headers: res.headers }); }
         resolve({ ...parsed, _status: res.statusCode, _headers: res.headers });
@@ -141,8 +140,6 @@ function streamRequest(urlPath, body, extraHeaders = {}) {
     req.end();
   });
 }
-
-// ── PoW ───────────────────────────────────────────────────────────────────────
 
 let _wasmInstance = null;
 
@@ -209,8 +206,6 @@ async function getPowHeader(targetPath) {
   return Buffer.from(JSON.stringify({ ...pow, target_path: targetPath })).toString('base64');
 }
 
-// ── SSE parser ────────────────────────────────────────────────────────────────
-
 function parseSSEStream(stream) {
   return new Promise((resolve, reject) => {
     let buf = '';
@@ -219,53 +214,79 @@ function parseSSEStream(stream) {
     let lastPath = null;
 
     function processLine(line) {
+      // SSE lines start with 'data:'
       if (!line.startsWith('data:')) return;
-      const raw = line.slice(5).trim();
+      
+      // Spec says 'data: ' (optional space)
+      // We must be careful not to slice off significant characters
+      let raw = line.slice(5);
+      if (raw.startsWith(' ')) raw = raw.slice(1);
+      
       if (raw === '[DONE]') return;
+      if (!raw) return;
+      
       try {
         const ev = JSON.parse(raw);
         if (ev.response_message_id) messageId = ev.response_message_id;
+        if (ev.message_id) messageId = ev.message_id;
 
+        // Path-based updates (p=path, v=value)
         if (ev.p !== undefined) {
           lastPath = ev.p;
-          if (typeof ev.v === 'string' && ev.p.includes('/content') && !ev.p.includes('thinking'))
+          if (typeof ev.v === 'string' && ev.p.includes('/content') && !ev.p.includes('thinking')) {
             content += ev.v;
+          }
           return;
         }
 
+        // Value-only updates
         if (ev.v !== undefined && ev.o === undefined && ev.p === undefined) {
-          if (typeof ev.v === 'string' && lastPath?.includes('/content') && !lastPath.includes('thinking'))
-            content += ev.v;
-          return;
-        }
-
-        if (ev.v?.response?.fragments) {
-          for (const frag of ev.v.response.fragments) {
-            if (frag.type === 'RESPONSE' && typeof frag.content === 'string') {
-              content += frag.content;
-              lastPath = 'response/fragments/-1/content';
+          if (typeof ev.v === 'string') {
+            if (!lastPath || (lastPath.includes('/content') && !lastPath.includes('thinking'))) {
+              content += ev.v;
             }
           }
-          if (ev.v.response?.message_id) messageId = ev.v.response.message_id;
+          return;
         }
-      } catch {}
+
+        // Legacy/Alternative fragment formats
+        const fragments = ev.v?.response?.fragments ?? ev.choices?.[0]?.delta?.content;
+        if (fragments) {
+          if (Array.isArray(fragments)) {
+            for (const frag of fragments) {
+              if ((frag.type === 'RESPONSE' || frag.type === 'text') && typeof frag.content === 'string') {
+                content += frag.content;
+              }
+            }
+          } else if (typeof fragments === 'string') {
+            content += fragments;
+          }
+          if (ev.v?.response?.message_id) messageId = ev.v.response.message_id;
+        }
+      } catch (err) {
+        // If it's not valid JSON, it's either a partial JSON chunk or raw text
+        // In SSE, 'data:' lines can be concatenated.
+        // DeepSeek typically sends one JSON object per 'data:' line.
+        // If parsing fails, we treat it as raw text to avoid losing characters.
+        content += raw;
+      }
     }
 
     stream.on('data', chunk => {
       buf += chunk.toString('utf8');
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) processLine(line.trim());
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop(); // Keep partial line in buffer
+      for (const line of lines) {
+        processLine(line);
+      }
     });
     stream.on('end', () => {
-      if (buf.trim()) processLine(buf.trim());
+      if (buf) processLine(buf);
       resolve({ content, message_id: messageId });
     });
     stream.on('error', err => reject(new DeepSeekError(err.message, 'STREAM_ERROR')));
   });
 }
-
-// ── Client ────────────────────────────────────────────────────────────────────
 
 class DeepSeekClient {
   constructor({ proxy = null } = {}) {
@@ -278,50 +299,36 @@ class DeepSeekClient {
     authToken = token;
   }
 
-  // Solve WAF sekali, simpan token ke cookie store
   async _ensureWaf() {
     if (this._wafSolved) return;
     const result = await solveAwsWaf(BASE_URL, UA, this._proxy);
     if (!result?.token) throw new DeepSeekError('WAF solve failed: no token', 'WAF_FAILED');
-    // Inject token ke cookie store internal kita
     cookies.set('aws-waf-token', result.token);
     this._wafSolved = true;
   }
 
   async login(email, password) {
-    // Solve WAF dulu sebelum login
     await this._ensureWaf();
-
     const loginBody = {
       email,
       mobile: '',
       password,
       area_code: '',
-      // device_id format dari log: 'B' + base64 — generate random
       device_id: 'B' + Buffer.from(crypto.randomBytes(48)).toString('base64'),
       os: 'web',
     };
-
     const res = await request('POST', API.LOGIN, { body: loginBody });
-
-    // Kalau WAF block lagi (202 / challenge header), re-solve sekali
-    if (
-      res._status === 202 ||
-      res._headers?.['x-amzn-waf-action'] === 'challenge'
-    ) {
+    if (res._status === 202 || res._headers?.['x-amzn-waf-action'] === 'challenge') {
       this._wafSolved = false;
       await this._ensureWaf();
       const retry = await request('POST', API.LOGIN, { body: loginBody });
       return this._extractToken(retry);
     }
-
     return this._extractToken(res);
   }
 
   _extractToken(res) {
-    const token =
-      res?.data?.biz_data?.user?.token ??
-      res?.data?.user?.token;
+    const token = res?.data?.biz_data?.user?.token ?? res?.data?.user?.token;
     if (!token) throw new DeepSeekError('Login failed: no token', 'AUTH_NO_TOKEN', res);
     authToken = token;
     return { ok: true, token };
@@ -344,7 +351,6 @@ class DeepSeekClient {
   async chat(sessionId, message, opts = {}) {
     const powHeader = await getPowHeader(API.CHAT);
     const session = this._sessions.get(sessionId) || { lastMessageId: null };
-
     const stream = await streamRequest(API.CHAT, {
       chat_session_id: sessionId,
       parent_message_id: session.lastMessageId,
@@ -355,7 +361,6 @@ class DeepSeekClient {
       search_enabled: opts.search ?? true,
       preempt: false,
     }, { 'X-Ds-Pow-Response': powHeader });
-
     const result = await parseSSEStream(stream);
     session.lastMessageId = result.message_id;
     this._sessions.set(sessionId, session);
@@ -368,26 +373,15 @@ class DeepSeekClient {
   }
 
   async uploadFile(filePathOrBuffer, filename, mimeType = 'application/octet-stream') {
-    const buffer = typeof filePathOrBuffer === 'string'
-      ? fs.readFileSync(filePathOrBuffer)
-      : filePathOrBuffer;
-    if (!filename && typeof filePathOrBuffer === 'string')
-      filename = path.basename(filePathOrBuffer);
-
+    const buffer = typeof filePathOrBuffer === 'string' ? fs.readFileSync(filePathOrBuffer) : filePathOrBuffer;
+    if (!filename && typeof filePathOrBuffer === 'string') filename = path.basename(filePathOrBuffer);
     const powHeader = await getPowHeader(API.UPLOAD_FILE);
     const form = new FormData();
     form.append('file', buffer, { filename, contentType: mimeType });
-
     const res = await request('POST', API.UPLOAD_FILE, {
       body: form,
-      headers: {
-        ...form.getHeaders(),
-        'x-file-size': String(buffer.length),
-        'x-ds-pow-response': powHeader,
-        'x-thinking-enabled': '0',
-      }
+      headers: { ...form.getHeaders(), 'x-file-size': String(buffer.length), 'x-ds-pow-response': powHeader, 'x-thinking-enabled': '0' }
     });
-
     return res?.data?.biz_data?.id || res?.data?.id;
   }
 

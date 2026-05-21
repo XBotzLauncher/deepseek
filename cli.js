@@ -3,40 +3,61 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const readline = require('readline');
+const { execSync } = require('child_process');
 const { DeepSeekClient, DeepSeekError } = require('./deepseek');
 
 const CONFIG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || __dirname, '.deepseek-cli');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
-const { execSync } = require('child_process');
-
 const C = {
-  green: '\x1b[32m',
-  cyan: '\x1b[36m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  dim: '\x1b[2m',
+  green: '\x1b[38;5;121m',
+  cyan: '\x1b[38;5;159m',
+  yellow: '\x1b[38;5;229m',
+  red: '\x1b[38;5;204m',
+  dim: '\x1b[38;5;244m',
   reset: '\x1b[0m',
   bold: '\x1b[1m',
-  magenta: '\x1b[35m',
-  blue: '\x1b[34m',
+  magenta: '\x1b[38;5;213m',
+  blue: '\x1b[38;5;117m',
+  gray: '\x1b[38;5;240m',
+  white: '\x1b[38;5;255m',
 };
 
 const S = {
-  arrow: `${C.dim}┃${C.reset}`,
-  prompt: `${C.cyan}┃${C.reset}`,
-  sep: `${C.dim}─${C.reset}`,
-  ok: `${C.green}◆${C.reset}`,
-  err: `${C.red}▲${C.reset}`,
-  info: `${C.blue}●${C.reset}`,
-  warn: `${C.yellow}■${C.reset}`,
-  agent: `${C.green}◈${C.reset}`,
-  tool: `${C.magenta}▸${C.reset}`,
-  thought: `${C.dim}·${C.reset}`,
+  arrow: `${C.gray}│${C.reset}`,
+  prompt: `${C.cyan}❯${C.reset}`,
+  sep: `${C.gray}─${C.reset}`,
+  ok: `${C.green}✔${C.reset}`,
+  err: `${C.red}✘${C.reset}`,
+  info: `${C.blue}ℹ${C.reset}`,
+  warn: `${C.yellow}⚠${C.reset}`,
+  agent: `${C.magenta}◈${C.reset}`,
+  tool: `${C.cyan}⚙${C.reset}`,
+  thought: `${C.gray}·${C.reset}`,
   done: `${C.green}✓${C.reset}`,
   fail: `${C.red}✗${C.reset}`,
+  dot: `${C.gray}•${C.reset}`,
+  chapter: `${C.blue}✦${C.reset}`,
 };
+
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function drawBox(lines, width = 48) {
+  const top = `  ${C.cyan}╔${'═'.repeat(width - 2)}╗${C.reset}`;
+  const bottom = `  ${C.cyan}╚${'═'.repeat(width - 2)}╝${C.reset}`;
+  const content = lines.map(line => {
+    const visibleLen = stripAnsi(line).length;
+    const padding = Math.max(0, width - 2 - visibleLen);
+    const leftPad = Math.floor(padding / 2);
+    const rightPad = padding - leftPad;
+    return `  ${C.cyan}║${C.reset}${' '.repeat(leftPad)}${line}${' '.repeat(rightPad)}${C.cyan}║${C.reset}`;
+  });
+  return [top, ...content, bottom].join('\n');
+}
 
 function loadConfig() {
   const localCfg = path.join(__dirname, 'config.json');
@@ -59,28 +80,27 @@ function saveConfig(config) {
 }
 
 function printBanner() {
-  console.log(`
-${C.cyan}  ┌─────────────────────────────────────┐${C.reset}
-${C.cyan}  │${C.reset}  ${C.bold}${C.green}AlfiXD CLI${C.reset}${C.dim} v1.0 — Coding Agent${C.reset}  ${C.cyan}│${C.reset}
-${C.cyan}  │${C.reset}  ${C.dim}autonomous terminal assistant${C.reset}     ${C.cyan}│${C.reset}
-${C.cyan}  └─────────────────────────────────────┘${C.reset}
-`);
+  const box = drawBox([
+    `${C.bold}${C.white}DEEPSEEK${C.reset} ${C.magenta}AGENT CLI${C.reset} ${C.dim}v1.2${C.reset}`,
+    `${C.dim}Professional autonomous coding assistant${C.reset}`
+  ]);
+  console.log('\n' + box + '\n');
 }
 
 function printHelp() {
   console.log(`
-  ${C.bold}${C.cyan}commands${C.reset}
-  ${C.dim}  ─────────────────────────────────────${C.reset}
-  ${C.green}  login <email> <pass>${C.reset}    Login to DeepSeek
-  ${C.green}  token <token>${C.reset}           Set token manually
-  ${C.green}  logout${C.reset}                  Logout
-  ${C.green}  chat${C.reset}                    Regular chat mode
-  ${C.green}  coding${C.reset}                  Coding agent mode ${C.dim}(default)${C.reset}
-  ${C.green}  new${C.reset}                     New session
-  ${C.green}  thinking${C.reset}                Toggle thinking mode ${C.dim}(chat only)${C.reset}
-  ${C.green}  search${C.reset}                  Toggle web search ${C.dim}(chat only)${C.reset}
-  ${C.green}  help${C.reset}                    Show this screen
-  ${C.green}  exit${C.reset}                    Quit
+  ${C.bold}${C.white}Commands${C.reset}
+  ${C.gray}──────────────────────────────────────────────${C.reset}
+  ${C.cyan}login <email> <pass>${C.reset}    Login to DeepSeek
+  ${C.cyan}token <token>${C.reset}           Set token manually
+  ${C.cyan}logout${C.reset}                  Logout
+  ${C.cyan}chat${C.reset}                    Regular chat mode
+  ${C.cyan}coding${C.reset}                  Coding agent mode ${C.dim}(default)${C.reset}
+  ${C.cyan}new${C.reset}                     New session
+  ${C.cyan}thinking${C.reset}                Toggle thinking mode ${C.dim}(chat)${C.reset}
+  ${C.cyan}search${C.reset}                  Toggle web search ${C.dim}(chat)${C.reset}
+  ${C.cyan}help${C.reset}                    Show this screen
+  ${C.cyan}exit${C.reset}                    Quit
 `);
 }
 
@@ -129,20 +149,20 @@ function renderMarkdown(text) {
   result = result
     .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
       const lines = code.trimEnd().split('\n');
-      const out = lines.map(l => `  ${C.dim}│${C.reset} ${l}`).join('\n');
-      return `\n${C.dim}  ┌─${lang ? ' ' + lang : ''}${C.reset}\n${out}\n${C.dim}  └──${C.reset}`;
+      const out = lines.map(l => `  ${C.gray}│${C.reset} ${l}`).join('\n');
+      return `\n${C.gray}  ╭─${lang ? ' ' + lang : ''}${C.reset}\n${out}\n${C.gray}  ╰──${C.reset}`;
     })
     .replace(/`([^`]+)`/g, `${C.yellow}$1${C.reset}`)
-    .replace(/\*\*([^*]+)\*\*/g, `${C.bold}$1${C.reset}`)
+    .replace(/\*\*([^*]+)\*\*/g, `${C.bold}${C.white}$1${C.reset}`)
     .replace(/\*([^*]+)\*/g, `${C.dim}$1${C.reset}`)
-    .replace(/^### (.*$)/gm, `${C.bold}${C.cyan}$1${C.reset}`)
-    .replace(/^## (.*$)/gm, `${C.bold}${C.cyan}$1${C.reset}`)
-    .replace(/^# (.*$)/gm, `${C.bold}${C.cyan}$1${C.reset}`)
-    .replace(/^- (.*$)/gm, ` ${C.dim}•${C.reset} $1`)
-    .replace(/^> (.*$)/gm, ` ${C.dim}▎${C.reset}${C.dim}$1${C.reset}`)
+    .replace(/^### (.*$)/gm, `${C.bold}${C.cyan}# $1${C.reset}`)
+    .replace(/^## (.*$)/gm, `${C.bold}${C.cyan}## $1${C.reset}`)
+    .replace(/^# (.*$)/gm, `${C.bold}${C.cyan}### $1${C.reset}`)
+    .replace(/^- (.*$)/gm, ` ${C.gray}•${C.reset} $1`)
+    .replace(/^> (.*$)/gm, ` ${C.gray}▎${C.reset}${C.dim}$1${C.reset}`)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, `${C.cyan}$1${C.reset}${C.dim}($2)${C.reset}`);
 
-  return result.trim();
+  return result;
 }
 
 function formatAIResponse(text) {
@@ -152,43 +172,35 @@ function formatAIResponse(text) {
     .trim();
 }
 
-const AGENT_PROMPT = `You are an autonomous coding agent. Your job is to complete the user's request by thinking step-by-step and using tools.
-
-## Core Rules
-1. Plan before acting — think about what needs to be done
-2. Use tools to explore, read, write, and execute
-3. If a tool errors, diagnose and try a different approach
-4. When done, summarize what you did
-5. Always respond in Indonesian to the user
-
-## Tool Format
-To call a tool, output EXACTLY:
-<TOOL_CALL>
-{"name":"tool_name","args":{...}}
-</TOOL_CALL>
-
-You can call ONE tool at a time. After each call I will execute it and give you the result.
-
-## Available Tools
-- **read** {filePath} — Read file contents
-- **write** {filePath, content} — Write/overwrite file
-- **edit** {filePath, oldString, newString} — Replace exact text in file
-- **exec** {command} — Run shell command (timeout 30s)
-- **glob** {pattern, cwd?} — Find files by glob pattern
-- **grep** {pattern, path?} — Search file contents
-- **ls** {path?} — List directory contents
-- **todos** {action, items?} — Manage task list. Actions: "add", "done", "list", "clear"
-- **think** {thought} — Show your reasoning to the user
+const AGENT_PROMPT = `You are a professional coding agent. You follow a strict Research -> Strategy -> Execution lifecycle.
 
 ## Workflow
-1. Start with <TOOL_CALL>{"name":"think","args":{"thought":"..."}}</TOOL_CALL>
-2. Explore the codebase with glob/grep/ls/read
-3. Plan changes, then execute with write/edit/exec
-4. Track progress with todos
-5. Verify changes with read/exec
-6. Give final summary
+1. **Research**: Map the codebase and validate assumptions using ls, glob, grep, and read.
+2. **Strategy**: Formulate a grounded plan and share it with the user.
+3. **Execution**: Apply surgical changes using write or edit. Verify with read or exec.
 
-Working directory:`;
+## Communication
+- Use the **update_topic** tool whenever you change your logical phase (e.g., from Research to Execution).
+- Use the **think** tool for step-by-step reasoning.
+- Keep responses concise and focused on the task.
+- Response in Indonesian.
+
+## Tool Format
+<TOOL_CALL>{"name":"tool_name","args":{...}}</TOOL_CALL>
+
+## Available Tools
+- **read** {filePath}
+- **write** {filePath, content}
+- **edit** {filePath, oldString, newString}
+- **exec** {command}
+- **glob** {pattern, cwd?}
+- **grep** {pattern, path?}
+- **ls** {path?}
+- **todos** {action, items?}
+- **think** {thought}
+- **update_topic** {title, strategic_intent} — Start a new chapter of work.
+
+Current Working Directory:`;
 
 const TOOLS = {
   read: async (args) => {
@@ -240,7 +252,7 @@ const TOOLS = {
     }
   },
   ls: async (args) => {
-    const p = args.path || '.';
+    const p = path.resolve(args.path || '.');
     try {
       const items = fs.readdirSync(p);
       const details = items.map(name => {
@@ -278,24 +290,103 @@ const TOOLS = {
   think: async (args) => {
     return `[THOUGHT] ${args.thought}`;
   },
+  update_topic: async (args) => {
+    console.log(`\n  ${S.chapter} ${C.bold}${C.white}${args.title}${C.reset}`);
+    console.log(`    ${C.dim}${args.strategic_intent}${C.reset}\n`);
+    return `[OK] Topic updated: ${args.title}`;
+  },
 };
 
-function parseToolCalls(text) {
-  const calls = [];
-  const regex = /<TOOL_CALL>([\s\S]*?)<\/TOOL_CALL>/g;
+function parseSegments(text) {
+  const segments = [];
+  // More permissive regex to catch malformed tags like TOOL_CALL> (missing <)
+  // Or cases where the AI is slightly inconsistent.
+  const regex = /<?TOOL_CALL>([\s\S]*?)<\/TOOL_CALL>?/g;
+  let lastIdx = 0;
   let match;
-  while ((match = regex.exec(text)) !== null) {
+
+  // Pre-process thinking tags if they exist (DeepSeek often uses <think>...</think>)
+  let processedText = text.replace(/<think>([\s\S]*?)<\/think>/g, (_, thought) => {
+    return `<TOOL_CALL>{"name":"think","args":{"thought":${JSON.stringify(thought.trim())}}}</TOOL_CALL>`;
+  });
+
+  while ((match = regex.exec(processedText)) !== null) {
+    const textBefore = processedText.slice(lastIdx, match.index);
+    if (textBefore.trim()) {
+      segments.push({ type: 'text', content: textBefore.trim() });
+    }
+
+    const rawTool = match[1].trim();
     try {
-      const parsed = JSON.parse(match[1].trim());
+      const parsed = JSON.parse(rawTool);
       if (parsed.name && TOOLS[parsed.name]) {
-        calls.push(parsed);
+        segments.push({ type: 'tool', name: parsed.name, args: parsed.args || {} });
+      } else {
+        segments.push({ type: 'text', content: match[0] });
       }
-    } catch {}
+    } catch (e) {
+      // Lenient parse
+      try {
+        const fixed = rawTool.replace(/\\"/g, '"').replace(/'/g, '"');
+        const parsed = JSON.parse(fixed);
+        if (parsed.name && TOOLS[parsed.name]) {
+          segments.push({ type: 'tool', name: parsed.name, args: parsed.args || {} });
+        } else {
+          segments.push({ type: 'text', content: match[0] });
+        }
+      } catch (e2) {
+        segments.push({ type: 'text', content: match[0] });
+      }
+    }
+    lastIdx = regex.lastIndex;
   }
-  return calls;
+
+  const textAfter = processedText.slice(lastIdx);
+  if (textAfter.trim()) {
+    segments.push({ type: 'text', content: textAfter.trim() });
+  }
+
+  return segments;
 }
 
-async function codingChat(client, config, sessionId, userMessage) {
+async function promptConfirmation(seg, rl) {
+  return new Promise(resolve => {
+    console.log(`\n  ${C.yellow}Apply this change?${C.reset}`);
+    if (seg.name === 'write') {
+      console.log(`  ${C.dim}Action:${C.reset} ${C.green}write${C.reset} ${C.white}${seg.args.filePath}${C.reset}`);
+    } else if (seg.name === 'edit') {
+      console.log(`  ${C.dim}Action:${C.reset} ${C.yellow}edit${C.reset} ${C.white}${seg.args.filePath}${C.reset}`);
+    } else if (seg.name === 'exec') {
+      console.log(`  ${C.dim}Action:${C.reset} ${C.red}exec${C.reset} ${C.white}${seg.args.command}${C.reset}`);
+    }
+    
+    console.log(`\n  ${C.blue}1.${C.reset} Allow once`);
+    console.log(`  ${C.blue}2.${C.reset} Allow for this session`);
+    console.log(`  ${C.blue}3.${C.reset} Modify with external editor`);
+    console.log(`  ${C.blue}4.${C.reset} No, suggest changes (esc)`);
+    
+    rl.question(`\n  ${C.cyan}choice${C.reset} ${S.prompt} `, (answer) => {
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function modifyWithEditor(content) {
+  const tmpFile = path.join(os.tmpdir(), `deepseek_edit_${Date.now()}.txt`);
+  fs.writeFileSync(tmpFile, content);
+  const editor = process.env.EDITOR || 'nano';
+  try {
+    execSync(`${editor} ${tmpFile}`, { stdio: 'inherit' });
+    const newContent = fs.readFileSync(tmpFile, 'utf8');
+    try { fs.unlinkSync(tmpFile); } catch {}
+    return newContent;
+  } catch (e) {
+    console.log(`  ${S.fail} ${C.red}Editor failed: ${e.message}${C.reset}`);
+    return content;
+  }
+}
+
+async function codingChat(client, config, sessionId, userMessage, rl) {
   const systemMsg = `${AGENT_PROMPT} ${process.cwd()}\n\nUser request: ${userMessage}`;
   let currentMsg = systemMsg;
   let finalAnswer = '';
@@ -304,61 +395,85 @@ async function codingChat(client, config, sessionId, userMessage) {
   for (let iter = 0; iter < maxIter; iter++) {
     const result = await client.chat(sessionId, currentMsg, { search: false, thinking: false });
     const content = result.content || '';
-    const toolCalls = parseToolCalls(content);
+    const segments = parseSegments(content);
 
-    if (toolCalls.length === 0) {
+    if (segments.length === 0) {
       finalAnswer = content;
       break;
     }
 
-    const textBefore = content.split(/<TOOL_CALL>/)[0] || '';
-    if (textBefore.trim()) {
-      const rendered = renderMarkdown(textBefore.trim());
-      const lines = rendered.split('\n');
-      console.log(`  ${S.agent} ${lines[0]}`);
-      for (let i = 1; i < lines.length; i++) {
-        console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
-      }
-    }
-
     let toolResultAccum = '';
-    for (const tc of toolCalls) {
-      const argsStr = JSON.stringify(tc.args);
-      const displayArgs = argsStr.length > 60 ? argsStr.slice(0, 60) + '…' : argsStr;
+    let hasActualTools = false;
 
-      if (tc.name === 'think') {
-        process.stdout.write(`  ${S.thought} `);
-        const thought = tc.args.thought || '';
-        console.log(`${C.dim}${thought}${C.reset}`);
-        toolResultAccum += '[THOUGHT] Noted. Continue with your plan.\n';
-        continue;
-      }
+    for (const seg of segments) {
+      if (seg.type === 'text') {
+        const rendered = renderMarkdown(seg.content);
+        const lines = rendered.split('\n');
+        console.log(`  ${S.agent} ${lines[0]}`);
+        for (let i = 1; i < lines.length; i++) {
+          console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
+        }
+      } else if (seg.type === 'tool') {
+        if (seg.name === 'think') {
+          const thought = seg.args.thought || '';
+          if (thought.trim()) {
+            console.log(`  ${S.thought} ${C.dim}${thought.trim()}${C.reset}`);
+          }
+          toolResultAccum += '[THOUGHT] Noted. Continue.\n';
+        } else if (seg.name === 'update_topic') {
+          const res = await TOOLS.update_topic(seg.args);
+          toolResultAccum += `Tool result for update_topic:\n${res}\n`;
+        } else {
+          hasActualTools = true;
+          if (['write', 'edit', 'exec'].includes(seg.name) && !global._sessionAllowed) {
+            const choice = await promptConfirmation(seg, rl);
+            if (choice === '2') {
+              global._sessionAllowed = true;
+            } else if (choice === '3') {
+              if (seg.name === 'write') seg.args.content = await modifyWithEditor(seg.args.content);
+              else if (seg.name === 'edit') seg.args.newString = await modifyWithEditor(seg.args.newString);
+              else if (seg.name === 'exec') seg.args.command = await modifyWithEditor(seg.args.command);
+            } else if (choice === '4' || choice === '') {
+              console.log(`  ${S.warn} ${C.yellow}Action cancelled by user.${C.reset}`);
+              toolResultAccum += `[ERROR] User rejected this ${seg.name} call.\n`;
+              continue;
+            }
+          }
 
-      process.stdout.write(`  ${S.tool} ${C.cyan}${tc.name}${C.reset}(${C.dim}${displayArgs}${C.reset}) `);
+          const argsStr = JSON.stringify(seg.args);
+          const displayArgs = argsStr.length > 80 ? argsStr.slice(0, 80) + '…' : argsStr;
+          process.stdout.write(`  ${S.tool} ${C.cyan}${seg.name}${C.reset}(${C.dim}${displayArgs}${C.reset}) `);
 
-      try {
-        const toolResult = await TOOLS[tc.name](tc.args);
-        const isError = toolResult.startsWith('[ERROR]');
-        console.log(`${isError ? S.fail : S.done}`);
-
-        if (toolResult && !toolResult.startsWith('[OK]') && !toolResult.startsWith('[THOUGHT]')) {
-          const preview = toolResult.length > 300 ? toolResult.slice(0, 300) + '...' : toolResult;
-          const lines = preview.split('\n');
-          if (lines.length > 8) {
-            for (let i = 0; i < 6; i++) console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
-            console.log(`  ${C.dim}│${C.reset} ${C.dim}... (${lines.length - 6} more lines)${C.reset}`);
-          } else {
-            for (const line of lines) console.log(`  ${C.dim}│${C.reset} ${line}`);
+          try {
+            const toolResult = await TOOLS[seg.name](seg.args);
+            const isError = toolResult.startsWith('[ERROR]');
+            console.log(`${isError ? S.fail : S.done}`);
+            if (toolResult && !toolResult.startsWith('[OK]') && !toolResult.startsWith('[THOUGHT]')) {
+              const preview = toolResult.length > 1000 ? toolResult.slice(0, 1000) + '...' : toolResult;
+              const lines = preview.split('\n');
+              if (lines.length > 12) {
+                for (let i = 0; i < 10; i++) console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
+                console.log(`  ${C.gray}│${C.reset} ${C.dim}... (${lines.length - 10} more lines)${C.reset}`);
+              } else {
+                for (const line of lines) if (line.trim()) console.log(`  ${C.gray}│${C.reset} ${line}`);
+              }
+            }
+            toolResultAccum += `Tool result for ${seg.name}:\n${toolResult}\n`;
+          } catch (e) {
+            console.log(`${S.fail}`);
+            toolResultAccum += `[ERROR] ${seg.name}: ${e.message}\n`;
           }
         }
-        toolResultAccum += `Tool result for ${tc.name}:\n${toolResult}\n`;
-      } catch (e) {
-        console.log(`${S.fail}`);
-        toolResultAccum += `[ERROR] ${tc.name}: ${e.message}\n`;
       }
     }
 
-    currentMsg = toolResultAccum || '[OK] All tools completed.';
+    if (!hasActualTools && toolResultAccum.includes('[THOUGHT]')) {
+      currentMsg = toolResultAccum;
+    } else if (hasActualTools || toolResultAccum.includes('[OK] Topic updated')) {
+      currentMsg = toolResultAccum;
+    } else {
+      return null;
+    }
   }
 
   return finalAnswer;
@@ -372,29 +487,26 @@ async function codingInteractive(client, config, sessionId) {
   });
 
   const ask = () => {
-    rl.question(`  ${C.magenta}agent${C.reset} ${C.dim}⊳${C.reset} `, async (input) => {
+    rl.question(`  ${C.magenta}agent${C.reset} ${S.prompt} `, async (input) => {
       const trimmed = input.trim();
       if (!trimmed) { ask(); return; }
       if (trimmed === '/exit' || trimmed === '/quit') { rl.close(); return; }
-
       try {
-        const response = await codingChat(client, config, sessionId, trimmed);
+        const response = await codingChat(client, config, sessionId, trimmed, rl);
         if (response) {
           const rendered = renderMarkdown(response.trim());
           const lines = rendered.split('\n');
           console.log(`  ${S.agent} ${lines[0]}`);
           for (let i = 1; i < lines.length; i++) {
-            console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
+            console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
           }
         }
       } catch (err) {
         console.log(`  ${S.fail} ${C.red}${err.message}${C.reset}`);
       }
-
       ask();
     });
   };
-
   ask();
 }
 
@@ -418,7 +530,7 @@ async function codingMode(client, config) {
 
   const promptLabel = () => {
     const mode = isCoding ? `${C.magenta}agent${C.reset}` : `${C.cyan}chat${C.reset}`;
-    return `  ${mode} ${C.dim}⊳${C.reset} `;
+    return `  ${mode} ${S.prompt} `;
   };
 
   const ask = () => {
@@ -439,18 +551,18 @@ async function codingMode(client, config) {
 
           case 'help':
             console.log(`
-  ${C.cyan}commands${C.reset}
-  ${C.dim}  ─────────────────────────────────────${C.reset}
-  ${C.green}  login <email> <pass>${C.reset}    login
-  ${C.green}  token <token>${C.reset}           set token
-  ${C.green}  logout${C.reset}                  logout
-  ${C.green}  chat${C.reset}                    regular chat mode
-  ${C.green}  coding${C.reset}                  coding agent mode
-  ${C.green}  new${C.reset}                     new session
-  ${C.green}  thinking${C.reset}                toggle thinking ${C.dim}(chat)${C.reset}
-  ${C.green}  search${C.reset}                  toggle web search ${C.dim}(chat)${C.reset}
-  ${C.green}  help${C.reset}                    this screen
-  ${C.green}  exit${C.reset}                    quit
+  ${C.bold}${C.white}Commands${C.reset}
+  ${C.gray}──────────────────────────────────────────────${C.reset}
+  ${C.cyan}/login <email> <pass>${C.reset}    Login
+  ${C.cyan}/token <token>${C.reset}           Set token
+  ${C.cyan}/logout${C.reset}                  Logout
+  ${C.cyan}/chat${C.reset}                    Regular chat mode
+  ${C.cyan}/coding${C.reset}                  Coding agent mode
+  ${C.cyan}/new${C.reset}                     New session
+  ${C.cyan}/thinking${C.reset}                Toggle thinking ${C.dim}(chat)${C.reset}
+  ${C.cyan}/search${C.reset}                  Toggle web search ${C.dim}(chat)${C.reset}
+  ${C.cyan}/help${C.reset}                    This screen
+  ${C.cyan}/exit${C.reset}                    Quit
             `);
             break;
 
@@ -527,13 +639,13 @@ async function codingMode(client, config) {
 
       try {
         if (isCoding) {
-          const response = await codingChat(client, config, sessionId, trimmed);
+          const response = await codingChat(client, config, sessionId, trimmed, rl);
           if (response) {
             const rendered = renderMarkdown(response.trim());
             const lines = rendered.split('\n');
             console.log(`  ${S.agent} ${lines[0]}`);
             for (let i = 1; i < lines.length; i++) {
-              console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
+              console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
             }
           }
         } else {
@@ -549,7 +661,7 @@ async function codingMode(client, config) {
             const lines = rendered.split('\n');
             console.log(`  ${C.cyan}◈${C.reset} ${lines[0]}`);
             for (let i = 1; i < lines.length; i++) {
-              console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
+              console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
             }
           }
         }
@@ -561,11 +673,9 @@ async function codingMode(client, config) {
           console.log(`  ${S.warn} ${C.yellow}session expired — re-login required${C.reset}`);
         }
       }
-
       ask();
     });
   };
-
   ask();
 }
 
@@ -664,39 +774,51 @@ async function main() {
         const csId = await client.createSession();
         const msg = args.slice(1).join(' ');
         if (msg) {
-          const response = await codingChat(client, config, csId, msg);
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const response = await codingChat(client, config, csId, msg, rl);
+          rl.close();
           if (response) {
             const rendered = renderMarkdown(response.trim());
             const lines = rendered.split('\n');
             console.log(`  ${S.agent} ${lines[0]}`);
             for (let i = 1; i < lines.length; i++) {
-              console.log(`  ${C.dim}│${C.reset} ${lines[i]}`);
+              console.log(`  ${C.gray}│${C.reset} ${lines[i]}`);
             }
           }
         } else {
           console.log(`  ${S.info} ${C.magenta}agent mode${C.reset}  ${C.dim}/exit to quit${C.reset}`);
-          await codingInteractive(client, config, csId);
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const ask = () => {
+            rl.question(`  ${C.magenta}agent${C.reset} ${S.prompt} `, async (input) => {
+              if (input.trim() === '/exit') { rl.close(); return; }
+              await codingChat(client, config, csId, input, rl);
+              ask();
+            });
+          };
+          ask();
         }
       }
       break;
 
     case '--help':
     case '-h':
-      console.log(`
-  ${C.cyan}┌────────────────────────────────────────────┐${C.reset}
-  ${C.cyan}│${C.reset}  ${C.bold}${C.green}DeepSeek CLI${C.reset} ${C.dim}— coding agent${C.reset}          ${C.cyan}│${C.reset}
-  ${C.cyan}└────────────────────────────────────────────┘${C.reset}
-
-  ${C.bold}${C.cyan}usage${C.reset}
-  ${C.dim}  ──────────────────────────────────────────${C.reset}
-  ${C.green}  deepseek${C.reset}                        start interactive agent
-  ${C.green}  deepseek -m <text>${C.reset}              single chat
-  ${C.green}  deepseek -c <request>${C.reset}           coding agent (one-shot)
-  ${C.green}  deepseek --login <email> <pass>${C.reset}  login
-  ${C.green}  deepseek --token <token>${C.reset}         set token
-  ${C.green}  deepseek --logout${C.reset}                logout
-  ${C.green}  deepseek --help${C.reset}                  this screen
+      {
+        const box = drawBox([
+          `${C.bold}${C.white}DEEPSEEK${C.reset} ${C.magenta}AGENT CLI${C.reset} ${C.dim}— professional coding assistant${C.reset}`
+        ]);
+        console.log('\n' + box);
+        console.log(`
+  ${C.bold}${C.white}Usage${C.reset}
+  ${C.gray}──────────────────────────────────────────────${C.reset}
+  ${C.cyan}deepseek${C.reset}                        start interactive agent
+  ${C.cyan}deepseek -m <text>${C.reset}              single chat
+  ${C.cyan}deepseek -c <request>${C.reset}           coding agent (one-shot)
+  ${C.cyan}deepseek --login <email> <pass>${C.reset}  login
+  ${C.cyan}deepseek --token <token>${C.reset}         set token
+  ${C.cyan}deepseek --logout${C.reset}                logout
+  ${C.cyan}deepseek --help${C.reset}                  this screen
       `);
+      }
       break;
 
     default:
