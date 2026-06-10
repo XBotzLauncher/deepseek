@@ -224,29 +224,39 @@ function parseSSEStream(stream) {
       if (raw === '[DONE]') return;
       try {
         const ev = JSON.parse(raw);
+        if (process.env.DEBUG_SSE) console.log('[SSE raw]', JSON.stringify(ev).slice(0, 200));
         if (ev.response_message_id) messageId = ev.response_message_id;
 
-        if (ev.p !== undefined) {
-          lastPath = ev.p;
-          if (typeof ev.v === 'string' && ev.p.includes('/content') && !ev.p.includes('thinking'))
-            content += ev.v;
-          return;
-        }
-
-        if (ev.v !== undefined && ev.o === undefined && ev.p === undefined) {
-          if (typeof ev.v === 'string' && lastPath?.includes('/content') && !lastPath.includes('thinking'))
-            content += ev.v;
-          return;
-        }
-
+        // Check fragments first (initial response with full structure)
         if (ev.v?.response?.fragments) {
           for (const frag of ev.v.response.fragments) {
             if (frag.type === 'RESPONSE' && typeof frag.content === 'string') {
+              if (process.env.DEBUG_SSE) console.log('[SSE frag]', JSON.stringify(frag.content));
               content += frag.content;
               lastPath = 'response/fragments/-1/content';
             }
           }
           if (ev.v.response?.message_id) messageId = ev.v.response.message_id;
+          return;
+        }
+
+        // Path + value (e.g., {"p":"response/fragments/-1/content","o":"APPEND","v":"text"})
+        if (ev.p !== undefined) {
+          lastPath = ev.p;
+          if (typeof ev.v === 'string' && ev.p.includes('/content') && !ev.p.includes('thinking')) {
+            if (process.env.DEBUG_SSE) console.log('[SSE p+v]', ev.p, '→', JSON.stringify(ev.v));
+            content += ev.v;
+          }
+          return;
+        }
+
+        // Value-only (e.g., {"v":"text"})
+        if (ev.v !== undefined && ev.o === undefined && ev.p === undefined) {
+          if (typeof ev.v === 'string' && lastPath?.includes('/content') && !lastPath.includes('thinking')) {
+            if (process.env.DEBUG_SSE) console.log('[SSE v-only]', 'lastPath:', lastPath, '→', JSON.stringify(ev.v));
+            content += ev.v;
+          }
+          return;
         }
       } catch {}
     }
